@@ -705,6 +705,13 @@ func (r *BarbicanReconciler) generateServiceConfig(
 		"EnableSecureRBAC": instance.Spec.BarbicanAPI.EnableSecureRBAC,
 	}
 
+	// Get QuorumQueues setting from transportURL
+	quorumQueues, err := GetQuorumQueuesFromTransportURL(ctx, h, fmt.Sprintf("%s-barbican-transport", instance.Name), instance.Namespace)
+	if err != nil {
+		return err
+	}
+	templateParameters["QuorumQueues"] = quorumQueues
+
 	// To avoid a json parsing error in kolla files, we always need to set PKCS11ClientDataPath
 	// This gets overridden in the PKCS11 section below if needed.
 	templateParameters["PKCS11ClientDataPath"] = barbicanv1beta1.DefaultPKCS11ClientDataPath
