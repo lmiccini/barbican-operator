@@ -23,7 +23,6 @@ import (
 	"strings"
 
 	barbicanv1beta1 "github.com/openstack-k8s-operators/barbican-operator/api/v1beta1"
-	rabbitmqv1 "github.com/openstack-k8s-operators/infra-operator/apis/rabbitmq/v1beta1"
 	topologyv1 "github.com/openstack-k8s-operators/infra-operator/apis/topology/v1beta1"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/condition"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/env"
@@ -31,7 +30,6 @@ import (
 	"github.com/openstack-k8s-operators/lib-common/modules/common/secret"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/util"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -147,22 +145,4 @@ func GenerateSecretStoreTemplateMap(
 		"PKCS11CryptoEnabled":      slices.Contains(stores, "pkcs11"),
 	}
 	return tempMap, nil
-}
-
-// GetQuorumQueuesFromTransportURL - helper function to get QuorumQueues setting from transportURL
-func GetQuorumQueuesFromTransportURL(
-	ctx context.Context,
-	h *helper.Helper,
-	transportURLName string,
-	namespace string,
-) (bool, error) {
-	transportURL := &rabbitmqv1.TransportURL{}
-	err := h.GetClient().Get(ctx, types.NamespacedName{
-		Name:      transportURLName,
-		Namespace: namespace,
-	}, transportURL)
-	if err != nil {
-		return false, err
-	}
-	return transportURL.GetQuorumQueues(), nil
 }

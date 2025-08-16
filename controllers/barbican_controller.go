@@ -309,7 +309,7 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 	}
 	// create service DB - end
 
-	err = r.generateServiceConfig(ctx, helper, instance, &configVars, serviceLabels, db)
+	err = r.generateServiceConfig(ctx, helper, instance, &configVars, serviceLabels, db, transportURL)
 	if err != nil {
 		instance.Status.Conditions.Set(condition.FalseCondition(
 			condition.ServiceConfigReadyCondition,
@@ -648,6 +648,7 @@ func (r *BarbicanReconciler) generateServiceConfig(
 	envVars *map[string]env.Setter,
 	serviceLabels map[string]string,
 	db *mariadbv1.Database,
+	transportURL *rabbitmqv1.TransportURL,
 ) error {
 	Log := r.GetLogger(ctx)
 	Log.Info("generateServiceConfigMaps - Barbican controller")
@@ -706,11 +707,7 @@ func (r *BarbicanReconciler) generateServiceConfig(
 	}
 
 	// Get QuorumQueues setting from transportURL
-	quorumQueues, err := GetQuorumQueuesFromTransportURL(ctx, h, fmt.Sprintf("%s-barbican-transport", instance.Name), instance.Namespace)
-	if err != nil {
-		return err
-	}
-	templateParameters["QuorumQueues"] = quorumQueues
+	templateParameters["QuorumQueues"] = transportURL.GetQuorumQueues()
 
 	// To avoid a json parsing error in kolla files, we always need to set PKCS11ClientDataPath
 	// This gets overridden in the PKCS11 section below if needed.
