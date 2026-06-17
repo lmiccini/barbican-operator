@@ -168,6 +168,7 @@ var _ = Describe("Barbican controller", func() {
 
 	When("Barbican CR is created with an invalid password", func() {
 		BeforeEach(func() {
+			DeferCleanup(k8sClient.Delete, ctx, CreateBarbicanMessageBusSecret(barbicanTest.Instance.Namespace, barbicanTest.RabbitmqSecretName))
 			DeferCleanup(k8sClient.Delete, ctx, CreateBarbicanInvalidSecret(barbicanName.Namespace, barbicanTest.BarbicanInvalidSecretName))
 			spec := GetDefaultBarbicanSpec()
 			spec["secret"] = barbicanTest.BarbicanInvalidSecretName
@@ -2143,6 +2144,77 @@ var _ = Describe("Barbican controller", func() {
 				})
 				g.Expect(secret.Finalizers).NotTo(
 					ContainElement(barbican.ACConsumerFinalizer))
+			}, timeout, interval).Should(Succeed())
+		})
+	})
+
+	When("TransportURL consumer finalizer is managed", func() {
+		BeforeEach(func() {
+			servicePasswordSecret := "transport-test-osp-secret" //nolint:gosec // G101
+
+			DeferCleanup(k8sClient.Delete, ctx,
+				CreateBarbicanMessageBusSecret(
+					barbicanTest.Instance.Namespace,
+					barbicanTest.RabbitmqSecretName,
+				),
+			)
+			DeferCleanup(k8sClient.Delete, ctx,
+				CreateBarbicanSecret(
+					barbicanTest.Instance.Namespace, servicePasswordSecret))
+
+			spec := GetDefaultBarbicanSpec()
+			spec["secret"] = servicePasswordSecret
+			spec["simpleCryptoBackendSecret"] = servicePasswordSecret
+			DeferCleanup(th.DeleteInstance,
+				CreateBarbican(barbicanTest.Instance, spec))
+			DeferCleanup(
+				mariadb.DeleteDBService,
+				mariadb.CreateDBService(
+					barbicanTest.Instance.Namespace,
+					GetBarbican(barbicanTest.Instance).Spec.DatabaseInstance,
+					corev1.ServiceSpec{
+						Ports: []corev1.ServicePort{{Port: 3306}}}))
+
+			DeferCleanup(keystone.DeleteKeystoneAPI,
+				keystone.CreateKeystoneAPI(barbicanTest.Instance.Namespace))
+
+			infra.SimulateTransportURLReady(barbicanTest.BarbicanTransportURL)
+			mariadb.SimulateMariaDBAccountCompleted(barbicanTest.BarbicanDatabaseAccount)
+			mariadb.SimulateMariaDBDatabaseCompleted(barbicanTest.BarbicanDatabaseName)
+			th.SimulateJobSuccess(barbicanTest.BarbicanDBSync)
+			keystone.SimulateKeystoneEndpointReady(barbicanTest.BarbicanKeystoneEndpoint)
+		})
+
+		It("should add the consumer finalizer to the transport secret", func() {
+			Eventually(func(g Gomega) {
+				secret := th.GetSecret(types.NamespacedName{
+					Namespace: barbicanTest.Instance.Namespace,
+					Name:      barbicanTest.RabbitmqSecretName,
+				})
+				g.Expect(secret.Finalizers).To(
+					ContainElement(barbican.TransportConsumerFinalizer))
+			}, timeout, interval).Should(Succeed())
+		})
+
+		It("should remove the consumer finalizer from transport secret on CR deletion", func() {
+			Eventually(func(g Gomega) {
+				secret := th.GetSecret(types.NamespacedName{
+					Namespace: barbicanTest.Instance.Namespace,
+					Name:      barbicanTest.RabbitmqSecretName,
+				})
+				g.Expect(secret.Finalizers).To(
+					ContainElement(barbican.TransportConsumerFinalizer))
+			}, timeout, interval).Should(Succeed())
+
+			th.DeleteInstance(GetBarbican(barbicanTest.Instance))
+
+			Eventually(func(g Gomega) {
+				secret := th.GetSecret(types.NamespacedName{
+					Namespace: barbicanTest.Instance.Namespace,
+					Name:      barbicanTest.RabbitmqSecretName,
+				})
+				g.Expect(secret.Finalizers).NotTo(
+					ContainElement(barbican.TransportConsumerFinalizer))
 			}, timeout, interval).Should(Succeed())
 		})
 	})

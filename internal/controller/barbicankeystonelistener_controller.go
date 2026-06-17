@@ -148,6 +148,7 @@ func (r *BarbicanKeystoneListenerReconciler) Reconcile(ctx context.Context, req 
 		condition.UnknownCondition(condition.TLSInputReadyCondition, condition.InitReason, condition.InputReadyInitMessage),
 	)
 	instance.Status.Conditions.Init(&cl)
+	instance.Status.ObservedGeneration = instance.Generation
 
 	Log.Info(fmt.Sprintf("Add finalizer %s", instance.Name))
 	// Add Finalizer

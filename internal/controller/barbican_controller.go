@@ -266,11 +266,7 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 		Log.Info(fmt.Sprintf("TransportURL %s successfully reconciled - operation: %s", transportURL.Name, string(op)))
 	}
 
-	instance.Status.TransportURLSecret = transportURL.Status.SecretName
-
-	if instance.Status.TransportURLSecret == "" {
-		// Since the TransportURL secret is automatically created by the Infra operator,
-		// we treat this as an info (because the user is not responsible for manually creating it).
+	if transportURL.Status.SecretName == "" {
 		Log.Info(fmt.Sprintf("Waiting for TransportURL %s secret to be created", transportURL.Name))
 		instance.Status.Conditions.Set(condition.FalseCondition(
 			barbicanv1beta1.BarbicanRabbitMQTransportURLReadyCondition,
@@ -280,8 +276,21 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 		return ctrl.Result{RequeueAfter: time.Duration(10) * time.Second}, nil
 	}
 
+	if err := rabbitmqv1.ManageTransportSecretFinalizer(
+		ctx, helper, instance.Namespace,
+		transportURL.Status.SecretName,
+		barbican.TransportConsumerFinalizer,
+	); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	Log.Info(fmt.Sprintf("TransportURL secret name %s", transportURL.Status.SecretName))
 	instance.Status.Conditions.MarkTrue(barbicanv1beta1.BarbicanRabbitMQTransportURLReadyCondition, barbicanv1beta1.BarbicanRabbitMQTransportURLReadyMessage)
+
+	if instance.Status.TransportURLSecret == "" ||
+		instance.Status.TransportURLSecret == transportURL.Status.SecretName {
+		instance.Status.TransportURLSecret = transportURL.Status.SecretName
+	}
 
 	// end main transportURL
 
@@ -290,13 +299,12 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 	// associated secret that is created
 	//
 
+	var notificationBusInstanceURL *rabbitmqv1.TransportURL
 	if instance.Spec.NotificationsBus != nil {
-		// init .Status.NotificationsURLSecret
-		instance.Status.NotificationsURLSecret = ptr.To("")
-
 		// Always pass the NotificationsBus config to ensure a separate TransportURL is created,
 		// even when using the same cluster as messaging (to allow different vhost/user)
-		notificationBusInstanceURL, op, err := r.transportURLCreateOrUpdate(ctx, instance, serviceLabels, instance.Spec.NotificationsBus)
+		var notifOp controllerutil.OperationResult
+		notificationBusInstanceURL, notifOp, err = r.transportURLCreateOrUpdate(ctx, instance, serviceLabels, instance.Spec.NotificationsBus)
 		if err != nil {
 			instance.Status.Conditions.Set(condition.FalseCondition(
 				condition.NotificationBusInstanceReadyCondition,
@@ -307,13 +315,11 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 			return ctrl.Result{}, err
 		}
 
-		if op != controllerutil.OperationResultNone {
-			Log.Info(fmt.Sprintf("NotificationBusInstanceURL %s successfully reconciled - operation: %s", notificationBusInstanceURL.Name, string(op)))
+		if notifOp != controllerutil.OperationResultNone {
+			Log.Info(fmt.Sprintf("NotificationBusInstanceURL %s successfully reconciled - operation: %s", notificationBusInstanceURL.Name, string(notifOp)))
 		}
 
-		*instance.Status.NotificationsURLSecret = notificationBusInstanceURL.Status.SecretName
-
-		if *instance.Status.NotificationsURLSecret == "" {
+		if notificationBusInstanceURL.Status.SecretName == "" {
 			Log.Info(fmt.Sprintf("Waiting for NotificationBusInstanceURL %s secret to be created", notificationBusInstanceURL.Name))
 			instance.Status.Conditions.Set(condition.FalseCondition(
 				condition.NotificationBusInstanceReadyCondition,
@@ -321,6 +327,20 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 				condition.SeverityInfo,
 				condition.NotificationBusInstanceReadyRunningMessage))
 			return ctrl.Result{RequeueAfter: time.Duration(10) * time.Second}, nil
+		}
+
+		if err := rabbitmqv1.ManageTransportSecretFinalizer(
+			ctx, helper, instance.Namespace,
+			notificationBusInstanceURL.Status.SecretName,
+			barbican.TransportConsumerFinalizer,
+		); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		if instance.Status.NotificationsURLSecret == nil ||
+			*instance.Status.NotificationsURLSecret == "" ||
+			*instance.Status.NotificationsURLSecret == notificationBusInstanceURL.Status.SecretName {
+			instance.Status.NotificationsURLSecret = ptr.To(notificationBusInstanceURL.Status.SecretName)
 		}
 
 		instance.Status.Conditions.MarkTrue(condition.NotificationBusInstanceReadyCondition, condition.NotificationBusInstanceReadyMessage)
@@ -378,7 +398,11 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 	}
 	// create service DB - end
 
-	err = r.generateServiceConfig(ctx, helper, instance, &configVars, serviceLabels, db)
+	notifBusSecretNameForConfig := ""
+	if notificationBusInstanceURL != nil {
+		notifBusSecretNameForConfig = notificationBusInstanceURL.Status.SecretName
+	}
+	err = r.generateServiceConfig(ctx, helper, instance, &configVars, serviceLabels, db, transportURL.Status.SecretName, notifBusSecretNameForConfig)
 	if err != nil {
 		instance.Status.Conditions.Set(condition.FalseCondition(
 			condition.ServiceConfigReadyCondition,
@@ -458,7 +482,12 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 	// TODO(dmendiza): Handle service upgrade
 
 	// create or update Barbican API deployment
-	barbicanAPI, op, err := r.apiDeploymentCreateOrUpdate(ctx, instance, helper)
+	notificationBusSecretName := ""
+	if notificationBusInstanceURL != nil {
+		notificationBusSecretName = notificationBusInstanceURL.Status.SecretName
+	}
+
+	barbicanAPI, op, err := r.apiDeploymentCreateOrUpdate(ctx, instance, helper, transportURL.Status.SecretName, notificationBusSecretName)
 	if err != nil {
 		instance.Status.Conditions.Set(condition.FalseCondition(
 			barbicanv1beta1.BarbicanAPIReadyCondition,
@@ -471,15 +500,21 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 	if op != controllerutil.OperationResultNone {
 		Log.Info(fmt.Sprintf("Deployment %s successfully reconciled - operation: %s", instance.Name, string(op)))
 	}
-
-	// Mirror BarbicanAPI's condition status
-	c := barbicanAPI.Status.Conditions.Mirror(barbicanv1beta1.BarbicanAPIReadyCondition)
-	if c != nil {
-		instance.Status.Conditions.Set(c)
+	if barbicanAPI.Generation == barbicanAPI.Status.ObservedGeneration {
+		c := barbicanAPI.Status.Conditions.Mirror(barbicanv1beta1.BarbicanAPIReadyCondition)
+		if c != nil {
+			instance.Status.Conditions.Set(c)
+		}
+	} else {
+		instance.Status.Conditions.Set(condition.FalseCondition(
+			barbicanv1beta1.BarbicanAPIReadyCondition,
+			condition.RequestedReason,
+			condition.SeverityInfo,
+			condition.DeploymentReadyRunningMessage))
 	}
 
 	// create or update Barbican Worker deployment
-	barbicanWorker, op, err := r.workerDeploymentCreateOrUpdate(ctx, instance, helper)
+	barbicanWorker, op, err := r.workerDeploymentCreateOrUpdate(ctx, instance, helper, transportURL.Status.SecretName, notificationBusSecretName)
 	if err != nil {
 		instance.Status.Conditions.Set(condition.FalseCondition(
 			barbicanv1beta1.BarbicanWorkerReadyCondition,
@@ -492,11 +527,17 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 	if op != controllerutil.OperationResultNone {
 		Log.Info(fmt.Sprintf("Deployment %s successfully reconciled - operation: %s", instance.Name, string(op)))
 	}
-
-	// Mirror BarbicanWorker's condition status
-	c = barbicanWorker.Status.Conditions.Mirror(barbicanv1beta1.BarbicanWorkerReadyCondition)
-	if c != nil {
-		instance.Status.Conditions.Set(c)
+	if barbicanWorker.Generation == barbicanWorker.Status.ObservedGeneration {
+		c := barbicanWorker.Status.Conditions.Mirror(barbicanv1beta1.BarbicanWorkerReadyCondition)
+		if c != nil {
+			instance.Status.Conditions.Set(c)
+		}
+	} else {
+		instance.Status.Conditions.Set(condition.FalseCondition(
+			barbicanv1beta1.BarbicanWorkerReadyCondition,
+			condition.RequestedReason,
+			condition.SeverityInfo,
+			condition.DeploymentReadyRunningMessage))
 	}
 
 	// remove finalizers from unused MariaDBAccount records
@@ -510,7 +551,7 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 	}
 
 	// create or update Barbican KeystoneListener deployment
-	barbicanKeystoneListener, op, err := r.keystoneListenerDeploymentCreateOrUpdate(ctx, instance, helper)
+	barbicanKeystoneListener, op, err := r.keystoneListenerDeploymentCreateOrUpdate(ctx, instance, helper, transportURL.Status.SecretName, notificationBusSecretName)
 	if err != nil {
 		instance.Status.Conditions.Set(condition.FalseCondition(
 			barbicanv1beta1.BarbicanKeystoneListenerReadyCondition,
@@ -523,11 +564,17 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 	if op != controllerutil.OperationResultNone {
 		Log.Info(fmt.Sprintf("Deployment %s successfully reconciled - operation: %s", instance.Name, string(op)))
 	}
-
-	// Mirror BarbicanKeystoneListener's condition status
-	c = barbicanKeystoneListener.Status.Conditions.Mirror(barbicanv1beta1.BarbicanKeystoneListenerReadyCondition)
-	if c != nil {
-		instance.Status.Conditions.Set(c)
+	if barbicanKeystoneListener.Generation == barbicanKeystoneListener.Status.ObservedGeneration {
+		c := barbicanKeystoneListener.Status.Conditions.Mirror(barbicanv1beta1.BarbicanKeystoneListenerReadyCondition)
+		if c != nil {
+			instance.Status.Conditions.Set(c)
+		}
+	} else {
+		instance.Status.Conditions.Set(condition.FalseCondition(
+			barbicanv1beta1.BarbicanKeystoneListenerReadyCondition,
+			condition.RequestedReason,
+			condition.SeverityInfo,
+			condition.DeploymentReadyRunningMessage))
 	}
 
 	// TODO(dmendiza): Handle API endpoints
@@ -563,6 +610,50 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 		instance.Status.Conditions.MarkTrue(
 			condition.ReadyCondition, condition.ReadyMessage)
 	}
+
+	// Finalize transport URL secret rotation at end of reconcile.
+	// Only remove the old secret's finalizer after all sub-conditions are true,
+	// ensuring no service is still using the previous secret.
+	isTransportRotation := instance.Status.TransportURLSecret != "" &&
+		instance.Status.TransportURLSecret != transportURL.Status.SecretName
+
+	if isTransportRotation {
+		if instance.Status.Conditions.AllSubConditionIsTrue() {
+			if err := rabbitmqv1.RemoveTransportSecretConsumerFinalizer(
+				ctx, helper, instance.Namespace,
+				instance.Status.TransportURLSecret,
+				barbican.TransportConsumerFinalizer,
+			); err != nil {
+				return ctrl.Result{}, err
+			}
+			instance.Status.TransportURLSecret = transportURL.Status.SecretName
+		}
+	} else {
+		instance.Status.TransportURLSecret = transportURL.Status.SecretName
+	}
+
+	// Finalize notification transport URL secret rotation at end of reconcile.
+	if notificationBusInstanceURL != nil {
+		isNotifTransportRotation := instance.Status.NotificationsURLSecret != nil &&
+			*instance.Status.NotificationsURLSecret != "" &&
+			*instance.Status.NotificationsURLSecret != notificationBusInstanceURL.Status.SecretName
+
+		if isNotifTransportRotation {
+			if instance.Status.Conditions.AllSubConditionIsTrue() {
+				if err := rabbitmqv1.RemoveTransportSecretConsumerFinalizer(
+					ctx, helper, instance.Namespace,
+					*instance.Status.NotificationsURLSecret,
+					barbican.TransportConsumerFinalizer,
+				); err != nil {
+					return ctrl.Result{}, err
+				}
+				instance.Status.NotificationsURLSecret = ptr.To(notificationBusInstanceURL.Status.SecretName)
+			}
+		} else {
+			instance.Status.NotificationsURLSecret = ptr.To(notificationBusInstanceURL.Status.SecretName)
+		}
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -658,6 +749,23 @@ func (r *BarbicanReconciler) reconcileDelete(ctx context.Context, instance *barb
 	} {
 		if err := keystonev1.RemoveACSecretConsumerFinalizer(ctx, helper, instance.Namespace,
 			secretName, barbican.ACConsumerFinalizer); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	if err := rabbitmqv1.RemoveTransportSecretConsumerFinalizer(
+		ctx, helper, instance.Namespace,
+		instance.Status.TransportURLSecret,
+		barbican.TransportConsumerFinalizer,
+	); err != nil {
+		return ctrl.Result{}, err
+	}
+	if instance.Status.NotificationsURLSecret != nil {
+		if err := rabbitmqv1.RemoveTransportSecretConsumerFinalizer(
+			ctx, helper, instance.Namespace,
+			*instance.Status.NotificationsURLSecret,
+			barbican.TransportConsumerFinalizer,
+		); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -877,6 +985,8 @@ func (r *BarbicanReconciler) generateServiceConfig(
 	envVars *map[string]env.Setter,
 	serviceLabels map[string]string,
 	db *mariadbv1.Database,
+	transportURLSecretName string,
+	notificationBusSecretName string,
 ) error {
 	Log := r.GetLogger(ctx)
 	Log.Info("generateServiceConfigMaps - Barbican controller")
@@ -889,7 +999,7 @@ func (r *BarbicanReconciler) generateServiceConfig(
 		return err
 	}
 
-	transportURLSecret, _, err := oko_secret.GetSecret(ctx, h, instance.Status.TransportURLSecret, instance.Namespace)
+	transportURLSecret, _, err := oko_secret.GetSecret(ctx, h, transportURLSecretName, instance.Namespace)
 	if err != nil {
 		return err
 	}
@@ -972,8 +1082,8 @@ func (r *BarbicanReconciler) generateServiceConfig(
 	// Add NotificationsURL if configured
 	// Always get the separate notification secret since we always create separate TransportURLs
 	var notificationInstanceURLSecret *corev1.Secret
-	if instance.Status.NotificationsURLSecret != nil {
-		notificationInstanceURLSecret, _, err = oko_secret.GetSecret(ctx, h, *instance.Status.NotificationsURLSecret, instance.Namespace)
+	if notificationBusSecretName != "" {
+		notificationInstanceURLSecret, _, err = oko_secret.GetSecret(ctx, h, notificationBusSecretName, instance.Namespace)
 		if err != nil {
 			return err
 		}
@@ -1071,16 +1181,16 @@ func (r *BarbicanReconciler) transportURLCreateOrUpdate(
 	return transportURL, op, err
 }
 
-func (r *BarbicanReconciler) apiDeploymentCreateOrUpdate(ctx context.Context, instance *barbicanv1beta1.Barbican, helper *helper.Helper) (*barbicanv1beta1.BarbicanAPI, controllerutil.OperationResult, error) {
+func (r *BarbicanReconciler) apiDeploymentCreateOrUpdate(ctx context.Context, instance *barbicanv1beta1.Barbican, helper *helper.Helper, transportURLSecret string, notificationBusSecretName string) (*barbicanv1beta1.BarbicanAPI, controllerutil.OperationResult, error) {
 	Log := r.GetLogger(ctx)
 
-	Log.Info(fmt.Sprintf("Creating barbican API spec.  transporturlsecret: '%s'", instance.Status.TransportURLSecret))
+	Log.Info(fmt.Sprintf("Creating barbican API spec.  transporturlsecret: '%s'", transportURLSecret))
 	Log.Info(fmt.Sprintf("database hostname: '%s'", instance.Status.DatabaseHostname))
 	apiSpec := barbicanv1beta1.BarbicanAPISpec{
 		BarbicanTemplate:    instance.Spec.BarbicanTemplate,
 		BarbicanAPITemplate: instance.Spec.BarbicanAPI,
 		DatabaseHostname:    instance.Status.DatabaseHostname,
-		TransportURLSecret:  instance.Status.TransportURLSecret,
+		TransportURLSecret:  transportURLSecret,
 	}
 
 	// If NodeSelector is not specified in BarbicanAPITemplate, the current
@@ -1110,7 +1220,7 @@ func (r *BarbicanReconciler) apiDeploymentCreateOrUpdate(ctx context.Context, in
 		deployment.Spec = apiSpec
 
 		if instance.Spec.NotificationsBus != nil {
-			deployment.Spec.NotificationsURLSecret = *instance.Status.NotificationsURLSecret
+			deployment.Spec.NotificationsURLSecret = notificationBusSecretName
 		}
 
 		err := controllerutil.SetControllerReference(instance, deployment, r.Scheme)
@@ -1127,16 +1237,16 @@ func (r *BarbicanReconciler) apiDeploymentCreateOrUpdate(ctx context.Context, in
 	return deployment, op, err
 }
 
-func (r *BarbicanReconciler) workerDeploymentCreateOrUpdate(ctx context.Context, instance *barbicanv1beta1.Barbican, helper *helper.Helper) (*barbicanv1beta1.BarbicanWorker, controllerutil.OperationResult, error) {
+func (r *BarbicanReconciler) workerDeploymentCreateOrUpdate(ctx context.Context, instance *barbicanv1beta1.Barbican, helper *helper.Helper, transportURLSecret string, notificationBusSecretName string) (*barbicanv1beta1.BarbicanWorker, controllerutil.OperationResult, error) {
 	Log := r.GetLogger(ctx)
 
-	Log.Info(fmt.Sprintf("Creating barbican Worker spec.  transporturlsecret: '%s'", instance.Status.TransportURLSecret))
+	Log.Info(fmt.Sprintf("Creating barbican Worker spec.  transporturlsecret: '%s'", transportURLSecret))
 	Log.Info(fmt.Sprintf("database hostname: '%s'", instance.Status.DatabaseHostname))
 	workerSpec := barbicanv1beta1.BarbicanWorkerSpec{
 		BarbicanTemplate:       instance.Spec.BarbicanTemplate,
 		BarbicanWorkerTemplate: instance.Spec.BarbicanWorker,
 		DatabaseHostname:       instance.Status.DatabaseHostname,
-		TransportURLSecret:     instance.Status.TransportURLSecret,
+		TransportURLSecret:     transportURLSecret,
 		TLS:                    instance.Spec.BarbicanAPI.TLS.Ca,
 	}
 
@@ -1164,7 +1274,7 @@ func (r *BarbicanReconciler) workerDeploymentCreateOrUpdate(ctx context.Context,
 		deployment.Spec = workerSpec
 
 		if instance.Spec.NotificationsBus != nil {
-			deployment.Spec.NotificationsURLSecret = *instance.Status.NotificationsURLSecret
+			deployment.Spec.NotificationsURLSecret = notificationBusSecretName
 		}
 
 		err := controllerutil.SetControllerReference(instance, deployment, r.Scheme)
@@ -1181,15 +1291,15 @@ func (r *BarbicanReconciler) workerDeploymentCreateOrUpdate(ctx context.Context,
 	return deployment, op, err
 }
 
-func (r *BarbicanReconciler) keystoneListenerDeploymentCreateOrUpdate(ctx context.Context, instance *barbicanv1beta1.Barbican, helper *helper.Helper) (*barbicanv1beta1.BarbicanKeystoneListener, controllerutil.OperationResult, error) {
+func (r *BarbicanReconciler) keystoneListenerDeploymentCreateOrUpdate(ctx context.Context, instance *barbicanv1beta1.Barbican, helper *helper.Helper, transportURLSecret string, notificationBusSecretName string) (*barbicanv1beta1.BarbicanKeystoneListener, controllerutil.OperationResult, error) {
 	Log := r.GetLogger(ctx)
-	Log.Info(fmt.Sprintf("Creating barbican KeystoneListener spec.  transporturlsecret: '%s'", instance.Status.TransportURLSecret))
+	Log.Info(fmt.Sprintf("Creating barbican KeystoneListener spec.  transporturlsecret: '%s'", transportURLSecret))
 	Log.Info(fmt.Sprintf("database hostname: '%s'", instance.Status.DatabaseHostname))
 	keystoneListenerSpec := barbicanv1beta1.BarbicanKeystoneListenerSpec{
 		BarbicanTemplate:                 instance.Spec.BarbicanTemplate,
 		BarbicanKeystoneListenerTemplate: instance.Spec.BarbicanKeystoneListener,
 		DatabaseHostname:                 instance.Status.DatabaseHostname,
-		TransportURLSecret:               instance.Status.TransportURLSecret,
+		TransportURLSecret:               transportURLSecret,
 		TLS:                              instance.Spec.BarbicanAPI.TLS.Ca,
 	}
 
@@ -1217,7 +1327,7 @@ func (r *BarbicanReconciler) keystoneListenerDeploymentCreateOrUpdate(ctx contex
 		deployment.Spec = keystoneListenerSpec
 
 		if instance.Spec.NotificationsBus != nil {
-			deployment.Spec.NotificationsURLSecret = *instance.Status.NotificationsURLSecret
+			deployment.Spec.NotificationsURLSecret = notificationBusSecretName
 		}
 
 		err := controllerutil.SetControllerReference(instance, deployment, r.Scheme)

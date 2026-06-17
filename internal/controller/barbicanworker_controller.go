@@ -145,6 +145,7 @@ func (r *BarbicanWorkerReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		condition.UnknownCondition(condition.TLSInputReadyCondition, condition.InitReason, condition.InputReadyInitMessage),
 	)
 	instance.Status.Conditions.Init(&cl)
+	instance.Status.ObservedGeneration = instance.Generation
 
 	Log.Info(fmt.Sprintf("Add finalizer %s", instance.Name))
 	// Add Finalizer
