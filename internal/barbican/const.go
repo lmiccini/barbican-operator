@@ -75,4 +75,8 @@ const (
 	BarbicanGID int64 = 42403
 	// ACConsumerFinalizer is added to AC secrets that barbican is actively consuming
 	ACConsumerFinalizer = "openstack.org/barbican-ac-consumer"
+
+	// TransportConsumerFinalizer is added to transport secrets that barbican is
+	// actively consuming, preventing premature deletion during credential rotation
+	TransportConsumerFinalizer = "openstack.org/barbican-transport-consumer"
 )

@@ -78,6 +78,12 @@ type BarbicanKeystoneListenerStatus struct {
 	// Barbican Database Hostname
 	DatabaseHostname string `json:"databaseHostname,omitempty"`
 
+	// ObservedGeneration - the most recent generation observed for this service.
+	// If the observed generation is different than the spec generation, then the
+	// controller has not started processing the latest changes, and the status
+	// and its conditions are likely stale.
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// LastAppliedTopology - the last applied Topology
 	LastAppliedTopology *topologyv1.TopoRef `json:"lastAppliedTopology,omitempty"`
 }
