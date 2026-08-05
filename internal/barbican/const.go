@@ -52,10 +52,14 @@ const (
 	LogVolume = "logs"
 	// ConfigVolume is the default volume name used to mount service config
 	ConfigVolume = "config-data"
-	// ConfigMountPoint is the mount point for service config
-	ConfigMountPoint = "/var/lib/config-data/default"
 	// CustomConfigVolume is the default volume name to mount custom service config
 	CustomConfigVolume = "config-data-custom"
+	// DBSyncConfigVolume is the volume name for the db-sync job's selective
+	// oslo.config mount (see GetOsloConfigVolumes)
+	DBSyncConfigVolume = "db-sync-config-data"
+	// PKCS11ConfigVolume is the volume name for the pkcs11-prep job's selective
+	// oslo.config mount (see GetOsloConfigVolumes)
+	PKCS11ConfigVolume = "pkcs11-config-data"
 	// CustomConfigMountPoint is the mount point for custom service config
 	CustomConfigMountPoint = "/etc/barbican/barbican.conf.d"
 	// ConfigOverwriteBasePath is the base directory where defaultConfigOverwrite
@@ -67,12 +71,6 @@ const (
 	ScriptMountPoint = "/usr/local/bin/container-scripts"
 	// PKCS11ClientDataVolume is the volume used to mount PKCS11 client Data
 	PKCS11ClientDataVolume = "pkcs11-client-data"
-	// PKCS11ClientDataMountPoint is the mount point used for PKCS11 client Data
-	PKCS11ClientDataMountPoint = "/var/lib/config-data/hsm"
-	// BarbicanUID - based on https://github.com/openstack-k8s-operators/tcib/blob/main/container-images/kolla/base/uid_gid_manage.sh
-	BarbicanUID int64 = 42403
-	// BarbicanGID - based on https://github.com/openstack-k8s-operators/tcib/blob/main/container-images/kolla/base/uid_gid_manage.sh
-	BarbicanGID int64 = 42403
 	// ACConsumerFinalizer is added to AC secrets that barbican is actively consuming
 	ACConsumerFinalizer = "openstack.org/barbican-ac-consumer"
 )

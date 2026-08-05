@@ -3,20 +3,18 @@ package barbicanapi
 
 import (
 	"github.com/openstack-k8s-operators/lib-common/modules/common/env"
+	"github.com/openstack-k8s-operators/lib-common/modules/common/pod"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/service"
+	"github.com/openstack-k8s-operators/lib-common/modules/users"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 
 	barbicanv1beta1 "github.com/openstack-k8s-operators/barbican-operator/api/v1beta1"
 	barbican "github.com/openstack-k8s-operators/barbican-operator/internal/barbican"
 	topologyv1 "github.com/openstack-k8s-operators/infra-operator/apis/topology/v1beta1"
-)
-
-const (
-	// ServiceCommand -
-	ServiceCommand = "/usr/local/bin/kolla_start"
 )
 
 // Deployment - returns a BarbicanAPI Deployment
@@ -29,7 +27,6 @@ func Deployment(
 	overwriteKeys []string,
 ) (*appsv1.Deployment, error) {
 	envVars := map[string]env.Setter{}
-	envVars["KOLLA_CONFIG_STRATEGY"] = env.SetValue("COPY_ALWAYS")
 	envVars["CONFIG_HASH"] = env.SetValue(configHash)
 	livenessProbe := &corev1.Probe{
 		// TODO might need tuning
@@ -43,7 +40,6 @@ func Deployment(
 		PeriodSeconds:       5,
 		InitialDelaySeconds: 5,
 	}
-	args := []string{"-c", ServiceCommand}
 	//
 	// https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
 	//
@@ -81,8 +77,10 @@ func Deployment(
 					Labels:      labels,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: instance.Spec.ServiceAccount,
-					Volumes:            apiVolumes,
+					AutomountServiceAccountToken: ptr.To(false),
+					ServiceAccountName:           instance.Spec.ServiceAccount,
+					SecurityContext:              pod.RestrictivePodSecurityContext(users.BarbicanUID, users.BarbicanGID),
+					Volumes:                      apiVolumes,
 					Containers: []corev1.Container{
 						{
 							Name: instance.Name + "-log",
@@ -98,7 +96,7 @@ func Deployment(
 								barbican.BarbicanLogPath + instance.Name + ".log",
 							},
 							Image:           instance.Spec.ContainerImage,
-							SecurityContext: barbican.GetBaseSecurityContext(),
+							SecurityContext: pod.RestrictiveSecurityContext(users.BarbicanUID, users.BarbicanGID),
 							Env:             env.MergeEnvs([]corev1.EnvVar{}, envVars),
 							VolumeMounts:    []corev1.VolumeMount{barbican.GetLogVolumeMount()},
 							Resources:       instance.Spec.Resources,
@@ -108,11 +106,11 @@ func Deployment(
 						{
 							Name: barbican.ServiceName + "-api",
 							Command: []string{
-								"/bin/bash",
+								"/usr/sbin/httpd",
 							},
-							Args:            args,
+							Args:            []string{"-DFOREGROUND"},
 							Image:           instance.Spec.ContainerImage,
-							SecurityContext: barbican.GetBaseSecurityContext(),
+							SecurityContext: pod.RestrictiveSecurityContext(users.BarbicanUID, users.BarbicanGID),
 							Env:             env.MergeEnvs([]corev1.EnvVar{}, envVars),
 							VolumeMounts:    apiVolumeMounts,
 							Resources:       instance.Spec.Resources,

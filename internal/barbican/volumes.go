@@ -5,25 +5,24 @@ import (
 	"slices"
 
 	barbicanv1beta1 "github.com/openstack-k8s-operators/barbican-operator/api/v1beta1"
+	"github.com/openstack-k8s-operators/lib-common/modules/common/volume"
 	"github.com/openstack-k8s-operators/lib-common/modules/storage"
 	corev1 "k8s.io/api/core/v1"
 )
 
 var (
-	configMode int32 = 0640
+	configMode int32 = 0440
 	scriptMode int32 = 0740
 )
 
 // GetVolumes - service volumes
 func GetVolumes(name string) []corev1.Volume {
-	var config0644AccessMode int32 = 0644
-
 	return []corev1.Volume{
 		{
 			Name: ConfigVolume,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
-					DefaultMode: &config0644AccessMode,
+					DefaultMode: &configMode,
 					SecretName:  name + "-config-data",
 				},
 			},
@@ -36,11 +35,6 @@ func GetVolumeMounts() []corev1.VolumeMount {
 	return []corev1.VolumeMount{
 		{
 			Name:      ConfigVolume,
-			MountPath: ConfigMountPoint,
-			ReadOnly:  true,
-		},
-		{
-			Name:      ConfigVolume,
 			MountPath: "/etc/my.cnf",
 			SubPath:   "my.cnf",
 			ReadOnly:  true,
@@ -48,23 +42,65 @@ func GetVolumeMounts() []corev1.VolumeMount {
 	}
 }
 
+// GetRunHttpdVolume - Returns the emptyDir Volume used for the httpd PID file
+func GetRunHttpdVolume() corev1.Volume {
+	return volume.WritableDirVolume(volume.RunHttpdVolumeName)
+}
+
+// GetVarLogHttpdVolume - Returns the emptyDir Volume used for httpd's own logs
+func GetVarLogHttpdVolume() corev1.Volume {
+	return volume.WritableDirVolume(volume.VarLogHttpdVolumeName)
+}
+
+// GetAPIHttpdVolumeMounts - Returns the VolumeMounts needed only by the
+// barbican-api httpd/WSGI container, mounted at their final destinations
+// (httpd.conf, mime.conf, ssl.conf, the WSGI vhost config and the WSGI
+// entry script itself), plus the run-httpd/var-log-httpd emptyDir mounts.
+func GetAPIHttpdVolumeMounts() []corev1.VolumeMount {
+	return []corev1.VolumeMount{
+		{
+			Name:      ConfigVolume,
+			MountPath: "/etc/httpd/conf/httpd.conf",
+			SubPath:   "httpd.conf",
+			ReadOnly:  true,
+		},
+		{
+			Name:      ConfigVolume,
+			MountPath: "/etc/httpd/conf.modules.d/mime.conf",
+			SubPath:   "mime.conf",
+			ReadOnly:  true,
+		},
+		{
+			Name:      ConfigVolume,
+			MountPath: "/etc/httpd/conf.d/ssl.conf",
+			SubPath:   "ssl.conf",
+			ReadOnly:  true,
+		},
+		{
+			Name:      ConfigVolume,
+			MountPath: "/etc/httpd/conf.d/10-barbican_wsgi_main.conf",
+			SubPath:   "10-barbican_wsgi_main.conf",
+			ReadOnly:  true,
+		},
+		{
+			Name:      ConfigVolume,
+			MountPath: "/var/www/cgi-bin/barbican/main",
+			SubPath:   "main",
+			ReadOnly:  true,
+		},
+		volume.WritableDirVolumeMount(volume.RunHttpdVolumeName, volume.RunHttpdMountPath),
+		volume.WritableDirVolumeMount(volume.VarLogHttpdVolumeName, volume.VarLogHttpdMountPath),
+	}
+}
+
 // GetLogVolumeMount - Returns the VolumeMount used for logging purposes
 func GetLogVolumeMount() corev1.VolumeMount {
-	return corev1.VolumeMount{
-		Name:      LogVolume,
-		MountPath: "/var/log/barbican",
-		ReadOnly:  false,
-	}
+	return volume.WritableDirVolumeMount(LogVolume, "/var/log/barbican")
 }
 
 // GetLogVolume - Returns the Volume used for logging purposes
 func GetLogVolume() corev1.Volume {
-	return corev1.Volume{
-		Name: LogVolume,
-		VolumeSource: corev1.VolumeSource{
-			EmptyDir: &corev1.EmptyDirVolumeSource{Medium: ""},
-		},
-	}
+	return volume.WritableDirVolume(LogVolume)
 }
 
 // GetScriptVolumeMount - Returns the VolumeMount for scripts
@@ -89,16 +125,6 @@ func GetScriptVolume(secretName string) corev1.Volume {
 	}
 }
 
-// GetKollaConfigVolumeMount - Returns the VolumeMount for the kolla config file
-func GetKollaConfigVolumeMount(serviceName string) corev1.VolumeMount {
-	return corev1.VolumeMount{
-		Name:      ConfigVolume,
-		MountPath: "/var/lib/kolla/config_files/config.json",
-		SubPath:   serviceName + "-config.json",
-		ReadOnly:  true,
-	}
-}
-
 // GetHSMVolumes returns Volumes for HSM secrets
 func GetHSMVolumes(pkcs11 barbicanv1beta1.BarbicanPKCS11Template) []corev1.Volume {
 	return []corev1.Volume{
@@ -114,12 +140,15 @@ func GetHSMVolumes(pkcs11 barbicanv1beta1.BarbicanPKCS11Template) []corev1.Volum
 	}
 }
 
-// GetHSMVolumeMounts returns Volume Mounts for HSM secrets
-func GetHSMVolumeMounts() []corev1.VolumeMount {
+// GetHSMVolumeMounts returns Volume Mounts for HSM secrets, mounted directly
+// at clientDataPath (e.g. instance.Spec.PKCS11.ClientDataPath) -- the final
+// location the HSM vendor client library expects, rather than a staging path
+// kolla used to copy from.
+func GetHSMVolumeMounts(clientDataPath string) []corev1.VolumeMount {
 	return []corev1.VolumeMount{
 		{
 			Name:      PKCS11ClientDataVolume,
-			MountPath: PKCS11ClientDataMountPoint,
+			MountPath: clientDataPath,
 			ReadOnly:  true,
 		},
 	}
@@ -127,13 +156,11 @@ func GetHSMVolumeMounts() []corev1.VolumeMount {
 
 // GetCustomConfigVolume - service custom config volume
 func GetCustomConfigVolume(name string) corev1.Volume {
-	var config0644AccessMode int32 = 0644
-
 	return corev1.Volume{
 		Name: CustomConfigVolume,
 		VolumeSource: corev1.VolumeSource{
 			Secret: &corev1.SecretVolumeSource{
-				DefaultMode: &config0644AccessMode,
+				DefaultMode: &configMode,
 				SecretName:  name + "-config-data",
 			},
 		},
@@ -200,20 +227,29 @@ func GetExtraVolumes(extraMounts []barbicanv1beta1.BarbicanExtraVolMounts, svc [
 	return volumes, mounts
 }
 
-// GetDBSyncVolumes - dbsync volumes
-// Unlike the individual Barbican services, the DbSyncJob doesn't need a
-// secret that contains all of the config snippets required by every
-// service, The two snippet files that it does need (DefaultsConfigFileName
-// and CustomConfigFileName) can be extracted from the top-level barbican
-// config-data secret.
-func GetDBSyncVolumes(name string) ([]corev1.Volume, []corev1.VolumeMount) {
-	var config0644AccessMode int32 = 0644
-	dbSyncVolumes := []corev1.Volume{
+// GetOsloConfigVolumes returns a Volume and matching VolumeMount that expose
+// only the two oslo.config snippet files a barbican-manage invocation needs
+// (DefaultsConfigFileName and CustomConfigFileName) under
+// /etc/barbican/barbican.conf.d, selected out of the top-level barbican
+// config-data Secret via Items.
+//
+// Unlike the individual Barbican services -- which mount the whole config-data
+// Secret so httpd and the WSGI app can read their own files -- Jobs that run
+// barbican-manage (DbSyncJob, PKCS11PrepJob) must NOT expose the Apache config
+// files (httpd.conf, ssl.conf, mime.conf, 10-barbican_wsgi_main.conf) that also
+// live in that Secret: barbican-manage relies on oslo.config defaults, which
+// auto-load the barbican.conf.d config-dir and parse every *.conf file as INI.
+// Those Apache files are not valid INI, so a full directory mount makes
+// barbican-manage fail on startup. Selecting only the snippet files avoids this.
+//
+// volumeName lets the caller give the volume a pod-unique name.
+func GetOsloConfigVolumes(name, volumeName string) ([]corev1.Volume, []corev1.VolumeMount) {
+	volumes := []corev1.Volume{
 		{
-			Name: "db-sync-config-data",
+			Name: volumeName,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
-					DefaultMode: &config0644AccessMode,
+					DefaultMode: &configMode,
 					SecretName:  name + "-config-data",
 					Items: []corev1.KeyToPath{
 						{
@@ -230,12 +266,12 @@ func GetDBSyncVolumes(name string) ([]corev1.Volume, []corev1.VolumeMount) {
 		},
 	}
 
-	dbSyncVolumeMount := []corev1.VolumeMount{
+	mounts := []corev1.VolumeMount{
 		{
-			Name:      "db-sync-config-data",
-			MountPath: "/etc/barbican/barbican.conf.d",
+			Name:      volumeName,
+			MountPath: CustomConfigMountPoint,
 			ReadOnly:  true,
 		},
 	}
-	return dbSyncVolumes, dbSyncVolumeMount
+	return volumes, mounts
 }
