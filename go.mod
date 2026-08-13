@@ -139,3 +139,5 @@ replace k8s.io/kube-openapi => k8s.io/kube-openapi v0.0.0-20250318190949-c8a335a
 
 // pin gnostic-models to v0.6.9 to avoid yaml type conflict with kube-openapi
 replace github.com/google/gnostic-models => github.com/google/gnostic-models v0.6.9 //allow-merging
+
+replace github.com/openstack-k8s-operators/lib-common/modules/common => github.com/lmiccini/lib-common/modules/common v0.0.0-20260813132232-f48a09125649

@@ -84,8 +84,9 @@ const (
 // BarbicanReconciler reconciles a Barbican object
 type BarbicanReconciler struct {
 	client.Client
-	Kclient kubernetes.Interface
-	Scheme  *runtime.Scheme
+	Kclient   kubernetes.Interface
+	Scheme    *runtime.Scheme
+	APIReader client.Reader
 }
 
 // GetLogger returns a logger object with a prefix of "controller.name" and additional controller context fields
@@ -154,6 +155,7 @@ func (r *BarbicanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (r
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	helper.SetAPIReader(r.APIReader)
 	// initialize status if Conditions is nil, but do not reset if it already
 	// exists
 	isNewInstance := instance.Status.Conditions == nil
@@ -490,6 +492,19 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 
 	// TODO(dmendiza): Handle service upgrade
 
+	rotationPending := instance.Status.TransportURLSecret != "" &&
+		instance.Status.TransportURLSecret != transportURL.Status.SecretName
+	if notificationBusInstanceURL != nil && instance.Status.NotificationsURLSecret != nil {
+		rotationPending = rotationPending ||
+			(*instance.Status.NotificationsURLSecret != "" &&
+				*instance.Status.NotificationsURLSecret != notificationBusInstanceURL.Status.SecretName)
+	}
+	if instance.Spec.Auth.ApplicationCredentialSecret != "" {
+		rotationPending = rotationPending ||
+			(instance.Status.ApplicationCredentialSecret != "" &&
+				instance.Status.ApplicationCredentialSecret != instance.Spec.Auth.ApplicationCredentialSecret)
+	}
+
 	// create or update Barbican API deployment
 	notificationBusSecretName := ""
 	if notificationBusInstanceURL != nil {
@@ -508,6 +523,9 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 	}
 	if opAPI != controllerutil.OperationResultNone {
 		Log.Info(fmt.Sprintf("Deployment %s successfully reconciled - operation: %s", instance.Name, string(opAPI)))
+	}
+	if err := object.EnsureFresh(ctx, helper, barbicanAPI, opAPI, rotationPending); err != nil {
+		return ctrl.Result{}, err
 	}
 	if barbicanAPI.Generation == barbicanAPI.Status.ObservedGeneration {
 		c := barbicanAPI.Status.Conditions.Mirror(barbicanv1beta1.BarbicanAPIReadyCondition)
@@ -535,6 +553,9 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 	}
 	if opWorker != controllerutil.OperationResultNone {
 		Log.Info(fmt.Sprintf("Deployment %s successfully reconciled - operation: %s", instance.Name, string(opWorker)))
+	}
+	if err := object.EnsureFresh(ctx, helper, barbicanWorker, opWorker, rotationPending); err != nil {
+		return ctrl.Result{}, err
 	}
 	if barbicanWorker.Generation == barbicanWorker.Status.ObservedGeneration {
 		c := barbicanWorker.Status.Conditions.Mirror(barbicanv1beta1.BarbicanWorkerReadyCondition)
@@ -573,6 +594,9 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 	if opKeystoneListener != controllerutil.OperationResultNone {
 		Log.Info(fmt.Sprintf("Deployment %s successfully reconciled - operation: %s", instance.Name, string(opKeystoneListener)))
 	}
+	if err := object.EnsureFresh(ctx, helper, barbicanKeystoneListener, opKeystoneListener, rotationPending); err != nil {
+		return ctrl.Result{}, err
+	}
 	if barbicanKeystoneListener.Generation == barbicanKeystoneListener.Status.ObservedGeneration {
 		c := barbicanKeystoneListener.Status.Conditions.Mirror(barbicanv1beta1.BarbicanKeystoneListenerReadyCondition)
 		if c != nil {
@@ -595,23 +619,6 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 	if instance.Status.Conditions.AllSubConditionIsTrue() {
 		instance.Status.Conditions.MarkTrue(
 			condition.ReadyCondition, condition.ReadyMessage)
-	}
-
-	rotationPending := instance.Status.TransportURLSecret != "" &&
-		instance.Status.TransportURLSecret != transportURL.Status.SecretName
-	if notificationBusInstanceURL != nil && instance.Status.NotificationsURLSecret != nil {
-		rotationPending = rotationPending ||
-			(*instance.Status.NotificationsURLSecret != "" &&
-				*instance.Status.NotificationsURLSecret != notificationBusInstanceURL.Status.SecretName)
-	}
-
-	result, graceActive, err := object.ManageRotationGracePeriod(
-		ctx, r.Client, instance, rotationPending, 60*time.Second)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if graceActive {
-		return result, nil
 	}
 
 	guardReady := condition.CredentialRotationGuardReady(

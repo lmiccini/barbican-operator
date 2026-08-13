@@ -2963,15 +2963,6 @@ var _ = Describe("Barbican Webhook", func() {
 				g.Expect(k8sClient.Update(ctx, b)).To(Succeed())
 			}, timeout, interval).Should(Succeed())
 
-			// Fast-forward the rotation grace period for envtest
-			Eventually(func(g Gomega) {
-				b := GetBarbican(barbicanTest.Instance)
-				if b.Annotations != nil && b.Annotations["openstack.org/rotation-grace-until"] != "" {
-					b.Annotations["openstack.org/rotation-grace-until"] = time.Now().Add(-5 * time.Second).Format(time.RFC3339)
-					g.Expect(k8sClient.Update(ctx, b)).To(Succeed())
-				}
-			}, timeout, interval).Should(Succeed())
-
 			// Verify old finalizer is removed and status updated
 			Eventually(func(g Gomega) {
 				secret := th.GetSecret(types.NamespacedName{
@@ -3062,15 +3053,6 @@ var _ = Describe("Barbican Webhook", func() {
 				}
 				b.Annotations["test-reconcile-trigger"] = fmt.Sprintf("%d", time.Now().UnixNano())
 				g.Expect(k8sClient.Update(ctx, b)).To(Succeed())
-			}, timeout, interval).Should(Succeed())
-
-			// Fast-forward the rotation grace period for envtest
-			Eventually(func(g Gomega) {
-				b := GetBarbican(barbicanTest.Instance)
-				if b.Annotations != nil && b.Annotations["openstack.org/rotation-grace-until"] != "" {
-					b.Annotations["openstack.org/rotation-grace-until"] = time.Now().Add(-5 * time.Second).Format(time.RFC3339)
-					g.Expect(k8sClient.Update(ctx, b)).To(Succeed())
-				}
 			}, timeout, interval).Should(Succeed())
 
 			// Now the finalizer should be released
