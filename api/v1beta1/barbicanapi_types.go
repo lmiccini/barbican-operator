@@ -107,6 +107,9 @@ type BarbicanAPIStatus struct {
 	// and its conditions are likely stale.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
+	// AppliedInputSecretHash - hash of input secret names last applied
+	AppliedInputSecretHash string `json:"appliedInputSecretHash,omitempty"`
+
 	// LastAppliedTopology - the last applied Topology
 	LastAppliedTopology *topologyv1.TopoRef `json:"lastAppliedTopology,omitempty"`
 }

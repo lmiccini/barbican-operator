@@ -1059,6 +1059,10 @@ spec:
             description: BarbicanKeystoneListenerStatus defines the observed state
               of BarbicanKeystoneListener
             properties:
+              appliedInputSecretHash:
+                description: AppliedInputSecretHash - hash of input secret names last
+                  applied
+                type: string
               conditions:
                 description: Conditions
                 items:

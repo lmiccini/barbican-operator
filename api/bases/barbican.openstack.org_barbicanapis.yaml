@@ -1253,6 +1253,10 @@ spec:
                   type: string
                 description: API endpoint
                 type: object
+              appliedInputSecretHash:
+                description: AppliedInputSecretHash - hash of input secret names last
+                  applied
+                type: string
               conditions:
                 description: Conditions
                 items:

@@ -492,24 +492,17 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 
 	// TODO(dmendiza): Handle service upgrade
 
-	rotationPending := instance.Status.TransportURLSecret != "" &&
-		instance.Status.TransportURLSecret != transportURL.Status.SecretName
-	if notificationBusInstanceURL != nil && instance.Status.NotificationsURLSecret != nil {
-		rotationPending = rotationPending ||
-			(*instance.Status.NotificationsURLSecret != "" &&
-				*instance.Status.NotificationsURLSecret != notificationBusInstanceURL.Status.SecretName)
-	}
-	if instance.Spec.Auth.ApplicationCredentialSecret != "" {
-		rotationPending = rotationPending ||
-			(instance.Status.ApplicationCredentialSecret != "" &&
-				instance.Status.ApplicationCredentialSecret != instance.Spec.Auth.ApplicationCredentialSecret)
-	}
-
 	// create or update Barbican API deployment
 	notificationBusSecretName := ""
 	if notificationBusInstanceURL != nil {
 		notificationBusSecretName = notificationBusInstanceURL.Status.SecretName
 	}
+
+	expectedInputHash, err := util.ObjectHash([]string{transportURL.Status.SecretName, notificationBusSecretName})
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to compute expected input hash: %w", err)
+	}
+	allServicesReady := true
 
 	barbicanAPI, opAPI, err := r.apiDeploymentCreateOrUpdate(ctx, instance, helper, transportURL.Status.SecretName, notificationBusSecretName)
 	if err != nil {
@@ -524,10 +517,8 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 	if opAPI != controllerutil.OperationResultNone {
 		Log.Info(fmt.Sprintf("Deployment %s successfully reconciled - operation: %s", instance.Name, string(opAPI)))
 	}
-	if err := object.EnsureFresh(ctx, helper, barbicanAPI, opAPI, rotationPending); err != nil {
-		return ctrl.Result{}, err
-	}
-	if barbicanAPI.Generation == barbicanAPI.Status.ObservedGeneration {
+	if barbicanAPI.Generation == barbicanAPI.Status.ObservedGeneration &&
+		barbicanAPI.Status.AppliedInputSecretHash == expectedInputHash {
 		c := barbicanAPI.Status.Conditions.Mirror(barbicanv1beta1.BarbicanAPIReadyCondition)
 		if c != nil {
 			instance.Status.Conditions.Set(c)
@@ -539,6 +530,10 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 			condition.SeverityInfo,
 			condition.DeploymentReadyRunningMessage))
 	}
+	allServicesReady = allServicesReady &&
+		barbicanAPI.Generation == barbicanAPI.Status.ObservedGeneration &&
+		barbicanAPI.Status.AppliedInputSecretHash == expectedInputHash &&
+		barbicanAPI.Status.Conditions.IsTrue(condition.ReadyCondition)
 
 	// create or update Barbican Worker deployment
 	barbicanWorker, opWorker, err := r.workerDeploymentCreateOrUpdate(ctx, instance, helper, transportURL.Status.SecretName, notificationBusSecretName)
@@ -554,10 +549,8 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 	if opWorker != controllerutil.OperationResultNone {
 		Log.Info(fmt.Sprintf("Deployment %s successfully reconciled - operation: %s", instance.Name, string(opWorker)))
 	}
-	if err := object.EnsureFresh(ctx, helper, barbicanWorker, opWorker, rotationPending); err != nil {
-		return ctrl.Result{}, err
-	}
-	if barbicanWorker.Generation == barbicanWorker.Status.ObservedGeneration {
+	if barbicanWorker.Generation == barbicanWorker.Status.ObservedGeneration &&
+		barbicanWorker.Status.AppliedInputSecretHash == expectedInputHash {
 		c := barbicanWorker.Status.Conditions.Mirror(barbicanv1beta1.BarbicanWorkerReadyCondition)
 		if c != nil {
 			instance.Status.Conditions.Set(c)
@@ -569,6 +562,10 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 			condition.SeverityInfo,
 			condition.DeploymentReadyRunningMessage))
 	}
+	allServicesReady = allServicesReady &&
+		barbicanWorker.Generation == barbicanWorker.Status.ObservedGeneration &&
+		barbicanWorker.Status.AppliedInputSecretHash == expectedInputHash &&
+		barbicanWorker.Status.Conditions.IsTrue(condition.ReadyCondition)
 
 	// remove finalizers from unused MariaDBAccount records
 	// this assumes all database-depedendent deployments are up and
@@ -594,10 +591,8 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 	if opKeystoneListener != controllerutil.OperationResultNone {
 		Log.Info(fmt.Sprintf("Deployment %s successfully reconciled - operation: %s", instance.Name, string(opKeystoneListener)))
 	}
-	if err := object.EnsureFresh(ctx, helper, barbicanKeystoneListener, opKeystoneListener, rotationPending); err != nil {
-		return ctrl.Result{}, err
-	}
-	if barbicanKeystoneListener.Generation == barbicanKeystoneListener.Status.ObservedGeneration {
+	if barbicanKeystoneListener.Generation == barbicanKeystoneListener.Status.ObservedGeneration &&
+		barbicanKeystoneListener.Status.AppliedInputSecretHash == expectedInputHash {
 		c := barbicanKeystoneListener.Status.Conditions.Mirror(barbicanv1beta1.BarbicanKeystoneListenerReadyCondition)
 		if c != nil {
 			instance.Status.Conditions.Set(c)
@@ -609,6 +604,10 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 			condition.SeverityInfo,
 			condition.DeploymentReadyRunningMessage))
 	}
+	allServicesReady = allServicesReady &&
+		barbicanKeystoneListener.Generation == barbicanKeystoneListener.Status.ObservedGeneration &&
+		barbicanKeystoneListener.Status.AppliedInputSecretHash == expectedInputHash &&
+		barbicanKeystoneListener.Status.Conditions.IsTrue(condition.ReadyCondition)
 
 	// TODO(dmendiza): Handle API endpoints
 
@@ -621,8 +620,7 @@ func (r *BarbicanReconciler) reconcileNormal(ctx context.Context, instance *barb
 			condition.ReadyCondition, condition.ReadyMessage)
 	}
 
-	guardReady := condition.CredentialRotationGuardReady(
-		true, &instance.Status.Conditions)
+	guardReady := allServicesReady
 
 	// Finalize transport URL rotation
 	transportSecretName, err := object.FinalizeSecretRotation(

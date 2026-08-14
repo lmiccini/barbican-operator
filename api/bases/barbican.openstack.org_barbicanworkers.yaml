@@ -1056,6 +1056,10 @@ spec:
           status:
             description: BarbicanWorkerStatus defines the observed state of BarbicanWorker
             properties:
+              appliedInputSecretHash:
+                description: AppliedInputSecretHash - hash of input secret names last
+                  applied
+                type: string
               conditions:
                 description: Conditions
                 items:
