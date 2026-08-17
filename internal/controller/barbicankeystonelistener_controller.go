@@ -62,8 +62,9 @@ import (
 // BarbicanKeystoneListenerReconciler reconciles a BarbicanKeystoneListener object
 type BarbicanKeystoneListenerReconciler struct {
 	client.Client
-	Kclient kubernetes.Interface
-	Scheme  *runtime.Scheme
+	Kclient   kubernetes.Interface
+	Scheme    *runtime.Scheme
+	APIReader client.Reader
 }
 
 // GetLogger returns a logger object with a prefix of "controller.name" and additional controller context fields
@@ -691,7 +692,11 @@ func (r *BarbicanKeystoneListenerReconciler) reconcileNormal(ctx context.Context
 	// Replicas > ReadyReplicas.
 	// In addition, make sure the controller sees the last Generation
 	// by comparing it with the ObservedGeneration.
-	if deployment.IsReady(deploy) {
+	ready, err := deployment.IsReadyForInput(ctx, r.APIReader, types.NamespacedName{Name: instance.Name, Namespace: instance.Namespace}, inputHash)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to check deployment readiness for %s: %w", instance.Name, err)
+	}
+	if ready {
 		oldDepName := fmt.Sprintf("%s-keystone-listener", instance.Name)
 		if err := cleanupOldDeployment(ctx, r.Client, instance, oldDepName); err != nil {
 			return ctrl.Result{}, err
@@ -706,6 +711,12 @@ func (r *BarbicanKeystoneListenerReconciler) reconcileNormal(ctx context.Context
 	}
 	// create Deployment - end
 
+	inputSecretHash, err := util.ObjectHash([]string{instance.Spec.TransportURLSecret, instance.Spec.NotificationsURLSecret})
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to compute input secret hash for %s: %w", instance.Name, err)
+	}
+	instance.Status.ObservedGeneration = instance.Generation
+	instance.Status.AppliedInputSecretHash = inputSecretHash
 	// We reached the end of the Reconcile, update the Ready condition based on
 	// the sub conditions
 	if instance.Status.Conditions.AllSubConditionIsTrue() {
