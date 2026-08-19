@@ -2,33 +2,24 @@ package barbican
 
 import (
 	barbicanv1beta1 "github.com/openstack-k8s-operators/barbican-operator/api/v1beta1"
-	"github.com/openstack-k8s-operators/lib-common/modules/common/env"
+	"github.com/openstack-k8s-operators/lib-common/modules/common/pod"
+	"github.com/openstack-k8s-operators/lib-common/modules/users"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-)
-
-const (
-	// DBSyncCommand -
-	DBSyncCommand = "barbican-manage db upgrade"
+	"k8s.io/utils/ptr"
 )
 
 // DbSyncJob func
 func DbSyncJob(instance *barbicanv1beta1.Barbican, labels map[string]string, annotations map[string]string) *batchv1.Job {
 	// The dbsync job just needs the main barbican config files
-	dbSyncVolumes, dbSyncMounts := GetDBSyncVolumes(instance.Name)
+	dbSyncVolumes, dbSyncMounts := GetOsloConfigVolumes(instance.Name, DBSyncConfigVolume)
 
 	// add CA cert if defined
 	if instance.Spec.BarbicanAPI.TLS.CaBundleSecretName != "" {
 		dbSyncVolumes = append(dbSyncVolumes, instance.Spec.BarbicanAPI.TLS.CreateVolume())
 		dbSyncMounts = append(dbSyncMounts, instance.Spec.BarbicanAPI.TLS.CreateVolumeMounts(nil)...)
 	}
-
-	args := []string{"-c", DBSyncCommand}
-
-	envVars := map[string]env.Setter{}
-	envVars["KOLLA_CONFIG_STRATEGY"] = env.SetValue("COPY_ALWAYS")
-	envVars["KOLLA_BOOTSTRAP"] = env.SetValue("TRUE")
 
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -42,19 +33,21 @@ func DbSyncJob(instance *barbicanv1beta1.Barbican, labels map[string]string, ann
 					Annotations: annotations,
 				},
 				Spec: corev1.PodSpec{
-					RestartPolicy:      corev1.RestartPolicyOnFailure,
-					ServiceAccountName: instance.RbacResourceName(),
-					Volumes:            dbSyncVolumes,
+					AutomountServiceAccountToken: ptr.To(false),
+					RestartPolicy:                corev1.RestartPolicyOnFailure,
+					ServiceAccountName:           instance.RbacResourceName(),
+					SecurityContext:              pod.RestrictivePodSecurityContext(users.BarbicanUID, users.BarbicanGID),
+					Volumes:                      dbSyncVolumes,
 					Containers: []corev1.Container{
 						{
 							Name: instance.Name + "-db-sync",
 							Command: []string{
-								"/bin/bash",
+								"barbican-manage",
 							},
-							Args:            args,
+							Args:            []string{"db", "upgrade"},
 							Image:           instance.Spec.BarbicanAPI.ContainerImage,
-							SecurityContext: GetBaseSecurityContext(),
-							Env:             env.MergeEnvs([]corev1.EnvVar{}, envVars),
+							SecurityContext: pod.RestrictiveSecurityContext(users.BarbicanUID, users.BarbicanGID),
+							Env:             []corev1.EnvVar{},
 							VolumeMounts:    dbSyncMounts,
 						},
 					},
